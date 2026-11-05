@@ -1,0 +1,42 @@
+name: Compilar Reach8 (Windows)
+
+on:
+  push:
+    paths:
+      - "halo-reach-8p/**"
+      - ".github/workflows/reach8.yml"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: halo-reach-8p
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar (CMake + MSVC x64)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Compilar Release
+        run: cmake --build build --config Release --parallel
+
+      - name: Comprobar herramienta de análisis
+        run: python -I tools/r8scan.py --self-test
+
+      - name: Empaquetar
+        shell: pwsh
+        run: |
+          $out = "dist/Reach8"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item build/Release/WTSAPI32.dll $out/
+          Copy-Item config/reach8.ini $out/
+          Copy-Item tools/install.ps1, tools/uninstall.ps1, tools/r8scan.py $out/
+          Copy-Item README.md $out/LEEME.md
+          Copy-Item docs -Recurse $out/docs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Reach8-windows-x64
+          path: halo-reach-8p/dist/Reach8
