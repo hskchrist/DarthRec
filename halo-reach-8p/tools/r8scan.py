@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import struct
 import sys
 from typing import List, Optional, Tuple
@@ -178,6 +179,65 @@ def check_patch(pe: PE, rva: int, size: int, verify: str) -> Tuple[bool, str]:
     return True, "encaja"
 
 
+
+# --- Búsqueda del límite de jugadores del lobby ------------------------------
+# Desde 2023 MCC admite 8 en Tiroteo, 4 en campaña y 16 en multijugador. Una
+# función o tabla "máximo de jugadores según el modo" tendrá los valores 4, 8 y
+# 16 muy cerca. Se buscan grupos de instrucciones con esos inmediatos.
+IMM_REGEXES = [
+    (re.compile(rb"[\xB8-\xBF]([\x04\x08\x10])\x00\x00\x00", re.S), 1, "mov reg32, imm"),
+    (re.compile(rb"\xC7[\x40-\x47](.)([\x04\x08\x10])\x00\x00\x00", re.S), 2, "mov [reg+d8], imm"),
+    (re.compile(rb"\xC7\x44\x24(.)([\x04\x08\x10])\x00\x00\x00", re.S), 2, "mov [rsp+d8], imm"),
+    (re.compile(rb"\x83[\xF8-\xFF]([\x04\x08\x10])", re.S), 1, "cmp reg, imm8"),
+]
+LOBBY_STRINGS = [b"MaxPlayers", b"MaxPlayerCount", b"MaxPartySize", b"PlayerLimit",
+                 b"max_players", b"maximum_player_count", b"MaxCoopPlayers"]
+
+
+def find_limit_clusters(pe: PE, window: int = 160, limit: int = 40):
+    hits = []  # (rva, valor, tipo, rva_del_inmediato)
+    for name, va, vsize, rawptr, rawsize, chars in pe.exec_sections():
+        blob = pe.data[rawptr:rawptr + rawsize]
+        for rx, group, kind in IMM_REGEXES:
+            for m in rx.finditer(blob):
+                value = m.group(group)[0]
+                hits.append((va + m.start(), value, kind, va + m.start(group)))
+    hits.sort()
+    clusters = []
+    for i, (rva, value, kind, imm) in enumerate(hits):
+        if value != 4:
+            continue
+        lo, hi = rva - window, rva + window
+        near = [h for h in hits[max(0, i - 64):i + 64] if lo <= h[0] <= hi]
+        values = {h[1] for h in near}
+        if 8 in values and 16 in values:
+            start = min(h[0] for h in near)
+            end = max(h[0] for h in near)
+            clusters.append((end - start, start, end, rva, imm, near))
+    clusters.sort()
+    out, seen = [], set()
+    for c in clusters:
+        key = c[1] // 256
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def find_strings(pe: PE):
+    found = []
+    for needle in LOBBY_STRINGS:
+        for enc, label in ((needle, "ascii"), (needle.decode().encode("utf-16-le"), "utf16")):
+            offs = [m.start() for m in re.finditer(re.escape(enc), pe.data)][:5]
+            if offs:
+                rvas = [pe.offset_to_rva(o) for o in offs]
+                found.append((needle.decode(), label, rvas))
+    return found
+
+
 def find_mcc(root: Optional[str]) -> Optional[str]:
     candidates = [root] if root else STEAM_GUESSES
     for c in candidates:
@@ -230,6 +290,16 @@ def analyse(win64: str, lines: List[str]) -> None:
         profile = "MCC marzo 2025"
     out(f"Perfil de build: {profile or 'DESCONOCIDO (versión nueva de MCC)'}")
 
+    out("\n--- Búsqueda del límite del lobby (4 campaña / 8 Tiroteo / 16 multijugador) ---")
+    clusters = find_limit_clusters(exe)
+    out(f"Grupos candidatos: {len(clusters)} (ordenados de más compacto a menos)")
+    for n, (span, start, end, rva4, imm4, near) in enumerate(clusters, 1):
+        desc = ", ".join(f"+0x{h[0]:X}={h[1]}" for h in near if h[1] in (4, 8, 16))
+        out(f"[{n}] valor 4 en +0x{rva4:X} (inmediato en +0x{imm4:X}) | {desc}")
+        out(f"    bytes desde +0x{start - 16:X}: {hexdump(exe.read_rva(start - 16, min(end - start + 48, 320)))}")
+    for name, enc, rvas in find_strings(exe):
+        out(f"Texto '{name}' ({enc}): " + ", ".join(f"+0x{r:X}" if r else "?" for r in rvas))
+
     proxy = os.path.join(win64, "WTSAPI32.dll")
     out(f"WTSAPI32.dll en win64: {'sí (Reach8 u otro mod instalado)' if os.path.isfile(proxy) else 'no'}")
 
@@ -263,6 +333,8 @@ def self_test() -> int:
     text = bytearray(0x200)
     code = bytes.fromhex("E8 00 00 00 00 48 8D 05 10 00 00 00 48 89 05 20 00 00 00 33 C0")
     text[0x40:0x40 + len(code)] = code
+    cluster = bytes.fromhex("B8 04 00 00 00 C3 CC CC B8 08 00 00 00 C3 CC CC B8 10 00 00 00 C3")
+    text[0x100:0x100 + len(cluster)] = cluster
     hdr = bytearray(0x200)
     hdr[0:2] = b"MZ"
     struct.pack_into("<I", hdr, 0x3C, 0x80)
@@ -286,6 +358,9 @@ def self_test() -> int:
     assert pe.is_exec_rva(0x1040)
     ok, _ = check_patch(pe, 0x1040, 1, "salto_corto")
     assert not ok
+    clusters = find_limit_clusters(pe)
+    assert clusters and clusters[0][3] == 0x1100, clusters
+    assert clusters[0][4] == 0x1101
     print("r8scan: prueba interna correcta")
     return 0
 

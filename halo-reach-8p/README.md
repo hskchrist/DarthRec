@@ -22,6 +22,7 @@ independientes, nombres propios y un menú en el juego.
 | 2 ventanas del juego en el mismo PC, colocadas lado a lado, con mandos repartidos | **Implementado** (cada ventana con sus 4 jugadores) |
 | **Unir esas 2 ventanas en la MISMA campaña (jugadores 5–8)** | **No implementado.** Ver abajo |
 | Menú "traer / ocultar" jugadores junto al jugador 1 | **No implementado** (falta localizar los objetos de Reach en memoria) |
+| Ampliar el lobby de campaña a 8 | **Preparado**: el mod aplica el parche desde `reach8.ini`; falta localizarlo en tu MCC con `r8scan.py` |
 | Versiones de MCC posteriores a marzo de 2025 | La interfaz de MCC se busca por firma (debería seguir funcionando). Los parches de `haloreach.dll` necesitan offsets de tu versión: usa `r8scan.py` |
 
 ### Por qué 5–8 jugadores todavía no
@@ -120,6 +121,21 @@ partida**: los jugadores de una ventana no ven a los de la otra.
   - Si algún gancho falla, deshace todos.
   - Los parches de `haloreach.dll` se aplican **todos o ninguno**, solo si la
     versión es conocida y los bytes tienen la forma esperada.
+
+### Ampliar el lobby de campaña de 4 a 8 (en investigación)
+
+El motor ya acepta jugadores extra gracias al parche de unión. El "máximo 4" que
+queda está en el **lobby de MCC**. Como MCC permite 8 en Tiroteo, 4 en campaña y 16 en
+multijugador, en algún lugar del ejecutable está esa regla. Para encontrarla:
+
+1. Ejecuta `python r8scan.py`. Además de lo habitual, busca en tu MCC los grupos de
+   código con los valores 4, 8 y 16 juntos, y los textos tipo `MaxPlayers`.
+2. Envíame `r8scan_informe.txt`. Analizo los candidatos y te paso una línea así:
+   `[mcc] parches_propios = 0xRVA:08:igual=04`
+3. La pegas en `Documentos\Reach8\reach8.ini`. El mod la aplica solo si los bytes
+   originales coinciden exactamente (`igual=`); si no coinciden, no toca nada.
+4. Prueba: el lobby de campaña debería mostrar 8 huecos. Para llenarlos hace falta
+   además la segunda ventana unida por el puente (aún no hecho).
 
 ### Si MCC se actualizó
 

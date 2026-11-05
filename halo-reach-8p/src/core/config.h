@@ -26,6 +26,8 @@ struct settings {
     bool reach_patches = true;
     // Parches propios: "rva:bytes:comprobación;..." (ver config/reach8.ini).
     std::string reach_custom_patches;
+    // Parches del ejecutable de MCC (lobby). Mismo formato; usar comprobación igual=.
+    std::string mcc_custom_patches;
 
     uint64_t xuid_seed = 0;  // se genera la primera vez
 

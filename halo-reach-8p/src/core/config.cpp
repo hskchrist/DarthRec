@@ -99,6 +99,7 @@ void load() {
 
     s.reach_patches = to_bool(str("reach.parches", "1"), true);
     s.reach_custom_patches = str("reach.parches_propios", "");
+    s.mcc_custom_patches = str("mcc.parches_propios", "");
 
     std::string seed = str("identidad.semilla_xuid", "");
     try {
@@ -162,6 +163,10 @@ void save() {
       << "# Formato: rva_hex:bytes_hex:comprobación  (comprobación = inicio_funcion | salto_corto | ninguna)\n"
       << "# Ejemplo: 0x397354:31C0C390:inicio_funcion;0x394A2C:EB:salto_corto\n"
       << "parches_propios = " << s.reach_custom_patches << "\n\n"
+      << "[mcc]\n"
+      << "# Parches del ejecutable de MCC, p. ej. ampliar el lobby de campaña de 4 a 8.\n"
+      << "# Los da r8scan.py. Formato: rva_hex:bytes_nuevos:igual=bytes_originales\n"
+      << "parches_propios = " << s.mcc_custom_patches << "\n\n"
       << "[identidad]\n"
       << "# Base para los identificadores (XUID) de los jugadores extra. No compartir entre PCs.\n"
       << "semilla_xuid = " << seed << "\n\n"

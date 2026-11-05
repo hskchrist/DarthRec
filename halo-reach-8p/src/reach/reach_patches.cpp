@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <mutex>
 #include <sstream>
@@ -18,13 +19,14 @@
 namespace r8::reach {
 namespace {
 
-enum class check { function_start, short_jump, none };
+enum class check { function_start, short_jump, expected_bytes, none };
 
 struct patch_def {
-    const char* name;
+    std::string name;
     uintptr_t rva;
-    const char* bytes;
+    std::string bytes;
     check verify;
+    std::string expected;  // bytes originales esperados (check::expected_bytes)
 };
 
 // Parches de AlphaRing (WinterSquire, licencia MIT) para Halo Reach.
@@ -49,6 +51,7 @@ struct active_patch {
 std::mutex g_mutex;
 std::vector<patch_def> g_defs;
 std::vector<active_patch> g_active;
+std::vector<active_patch> g_mcc_active;  // parches del ejecutable de MCC (lobby)
 uintptr_t g_loaded_base = 0;
 std::string g_dll_version = "-";
 std::atomic<bool> g_running{false};
@@ -61,11 +64,17 @@ bool passes(const memory::module_info& m, const patch_def& def, std::string* why
     uintptr_t at = m.base + def.rva;
     size_t size = memory::parse_hex(def.bytes).size();
     if (def.rva == 0 || def.rva + size >= m.size) {
-        *why = "fuera del DLL";
+        *why = "fuera del módulo";
         return false;
     }
-    if (!memory::is_executable(at)) {
+    // Con bytes originales comprobados se permite también tocar datos (p. ej. una tabla de
+    // límites del lobby); el resto de comprobaciones exigen que sea código.
+    if (def.verify != check::expected_bytes && !memory::is_executable(at)) {
         *why = "no es código";
+        return false;
+    }
+    if (!memory::is_readable(at - 1, size + 1)) {
+        *why = "memoria no legible";
         return false;
     }
     auto p = reinterpret_cast<const uint8_t*>(at);
@@ -85,6 +94,15 @@ bool passes(const memory::module_info& m, const patch_def& def, std::string* why
                 return false;
             }
             break;
+        case check::expected_bytes: {
+            auto want = memory::parse_hex(def.expected);
+            if (want.empty() || memcmp(p, want.data(), want.size()) != 0) {
+                *why = "los bytes originales no coinciden (hay " +
+                       memory::to_hex(p, want.empty() ? size : want.size()) + ")";
+                return false;
+            }
+            break;
+        }
         case check::none:
             break;
     }
@@ -129,19 +147,19 @@ void apply_all_locked(const memory::module_info& m) {
         }
         R8_ERROR("haloreach.dll %s: las comprobaciones fallaron; no se aplica ningún parche",
                  g_dll_version.c_str());
-        for (auto& a : g_active) R8_ERROR("  %s @+0x%llX: %s", a.def.name,
+        for (auto& a : g_active) R8_ERROR("  %s @+0x%llX: %s", a.def.name.c_str(),
                                           static_cast<unsigned long long>(a.def.rva), a.state.c_str());
         return;
     }
     for (auto& a : g_active) {
         if (a.patch.apply()) {
             a.state = "aplicado";
-            R8_INFO("Parche '%s' aplicado en haloreach.dll+0x%llX (original: %s)", a.def.name,
+            R8_INFO("Parche '%s' aplicado en haloreach.dll+0x%llX (original: %s)", a.def.name.c_str(),
                     static_cast<unsigned long long>(a.def.rva),
                     memory::to_hex(a.patch.original().data(), a.patch.original().size()).c_str());
         } else {
             a.state = "error al escribir";
-            R8_ERROR("Parche '%s' no se pudo escribir", a.def.name);
+            R8_ERROR("Parche '%s' no se pudo escribir", a.def.name.c_str());
         }
     }
 }
@@ -171,17 +189,16 @@ HMODULE WINAPI hk_load_library_ex(LPCWSTR name, HANDLE file, DWORD flags) {
     return result;
 }
 
-std::vector<patch_def> parse_custom(const std::string& text) {
+// Formato: rva_hex:bytes_hex:comprobación ; comprobación = inicio_funcion | salto_corto |
+// igual=BYTES_ORIGINALES | ninguna. Varios parches separados por ';'.
+std::vector<patch_def> parse_custom(const std::string& text, const char* label) {
     std::vector<patch_def> out;
-    static std::vector<std::string> storage;  // los punteros de patch_def apuntan aquí
-    storage.clear();
-    storage.reserve(64);
     std::stringstream ss(text);
     std::string item;
     while (std::getline(ss, item, ';')) {
         size_t a = item.find(':');
-        size_t b = a == std::string::npos ? a : item.find(':', a + 1);
         if (a == std::string::npos) continue;
+        size_t b = item.find(':', a + 1);
         uintptr_t rva = 0;
         try {
             rva = static_cast<uintptr_t>(std::stoull(item.substr(0, a), nullptr, 16));
@@ -190,21 +207,57 @@ std::vector<patch_def> parse_custom(const std::string& text) {
         }
         std::string bytes = item.substr(a + 1, b == std::string::npos ? std::string::npos : b - a - 1);
         std::string verify = b == std::string::npos ? "" : item.substr(b + 1);
-        if (memory::parse_hex(bytes).empty() || storage.size() >= 64) continue;
-        storage.push_back(bytes);
-        check c = verify.find("salto") != std::string::npos ? check::short_jump
-                  : verify.find("ninguna") != std::string::npos ? check::none
-                                                                : check::function_start;
-        out.push_back({"parche propio", rva, storage.back().c_str(), c});
+        if (memory::parse_hex(bytes).empty()) continue;
+        patch_def def{label, rva, bytes, check::function_start, ""};
+        if (verify.rfind("igual=", 0) == 0) {
+            def.verify = check::expected_bytes;
+            def.expected = verify.substr(6);
+        } else if (verify.find("salto") != std::string::npos) {
+            def.verify = check::short_jump;
+        } else if (verify.find("ninguna") != std::string::npos) {
+            def.verify = check::none;
+        }
+        out.push_back(std::move(def));
     }
     return out;
+}
+
+// Parches del ejecutable de MCC (por ejemplo, el máximo de jugadores del lobby de
+// campaña). Se aplican una vez al iniciar, con las mismas reglas: todo o nada.
+void apply_mcc_patches(const std::vector<patch_def>& defs) {
+    auto m = memory::find_module(nullptr);
+    if (!m || defs.empty()) return;
+    std::lock_guard lock(g_mutex);
+    bool all_ok = true;
+    for (const auto& def : defs) {
+        active_patch a{def, memory::patch(m->base + def.rva, memory::parse_hex(def.bytes), def.name)};
+        std::string why;
+        if (!passes(*m, def, &why)) {
+            a.state = "omitido: " + why;
+            all_ok = false;
+        }
+        g_mcc_active.push_back(std::move(a));
+    }
+    for (auto& a : g_mcc_active) {
+        if (!all_ok) {
+            if (a.state == "pendiente") a.state = "omitido: otro parche falló";
+            R8_ERROR("MCC +0x%llX: %s", static_cast<unsigned long long>(a.def.rva), a.state.c_str());
+            continue;
+        }
+        a.state = a.patch.apply() ? "aplicado" : "error al escribir";
+        R8_INFO("Parche de MCC +0x%llX: %s (original: %s)", static_cast<unsigned long long>(a.def.rva),
+                a.state.c_str(),
+                memory::to_hex(a.patch.original().data(), a.patch.original().size()).c_str());
+    }
 }
 
 }  // namespace
 
 bool initialize(mcc::build_profile profile) {
     auto s = config::get();
-    std::vector<patch_def> defs = parse_custom(s.reach_custom_patches);
+    apply_mcc_patches(parse_custom(s.mcc_custom_patches, "MCC (lobby)"));
+
+    std::vector<patch_def> defs = parse_custom(s.reach_custom_patches, "parche propio");
     if (!defs.empty()) {
         R8_INFO("Usando %zu parche(s) propio(s) de reach8.ini", defs.size());
     } else if (profile == mcc::build_profile::v1_3385) {
@@ -243,6 +296,8 @@ void shutdown() {
         for (auto& a : g_active) a.patch.restore();
     }
     g_active.clear();
+    for (auto& a : g_mcc_active) a.patch.restore();
+    g_mcc_active.clear();
 }
 
 bool loaded() {
@@ -264,6 +319,10 @@ std::vector<patch_status> status() {
     }
     if (out.empty()) {
         for (auto& d : g_defs) out.push_back({d.name, d.rva, "esperando haloreach.dll", ""});
+    }
+    for (auto& a : g_mcc_active) {
+        out.push_back({a.def.name, a.def.rva, a.state,
+                       memory::to_hex(a.patch.original().data(), a.patch.original().size())});
     }
     return out;
 }
