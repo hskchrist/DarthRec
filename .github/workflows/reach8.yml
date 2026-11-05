@@ -22,6 +22,21 @@ jobs:
       - name: Compilar Release
         run: cmake --build build --config Release --parallel
 
+      - name: Verificar el DLL (exportaciones y descripción)
+        shell: pwsh
+        run: |
+          $dll = "build/Release/WTSAPI32.dll"
+          $desc = (Get-Item $dll).VersionInfo.FileDescription
+          if ($desc -notlike "*Reach8*") { throw "Falta la descripción Reach8 (la usa uninstall.ps1): '$desc'" }
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $exports = & $dumpbin.FullName /exports $dll | Out-String
+          foreach ($name in "WTSQuerySessionInformationW", "WTSRegisterSessionNotification", "WTSFreeMemory") {
+            if ($exports -notmatch "$name\s*\(forwarded to") { throw "Exportación $name no reenviada" }
+          }
+          $count = ([regex]::Matches($exports, "forwarded to")).Count
+          Write-Host "Descripción: $desc | Exportaciones reenviadas a Windows: $count"
+
       - name: Comprobar herramienta de análisis
         run: python -I tools/r8scan.py --self-test
 

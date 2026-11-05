@@ -5,3 +5,8 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Reach8
+halo-reach-8p/build/
+halo-reach-8p/dist/
+__pycache__/

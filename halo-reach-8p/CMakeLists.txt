@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(reach8 VERSION 0.1.0 LANGUAGES C CXX)
+project(reach8 VERSION 0.1.0 LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "Reach8 solo se compila en Windows con MSVC (Visual Studio 2022, x64).")

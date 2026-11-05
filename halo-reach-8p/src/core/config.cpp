@@ -4,6 +4,7 @@
 #include <objbase.h>
 
 #include <cstdio>
+#include <cstring>
 #include <atomic>
 #include <fstream>
 #include <map>

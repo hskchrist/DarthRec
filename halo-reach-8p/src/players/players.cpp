@@ -1,6 +1,7 @@
 #include "players/players.h"
 
 #include <atomic>
+#include <cwchar>
 #include <mutex>
 
 #include "core/config.h"

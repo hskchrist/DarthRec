@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdio>
+#include <cwchar>
 #include <mutex>
 #include <sstream>
 #include <thread>
